@@ -2,12 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:barcode_scan/barcode_scan.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:test1/http.dart';
 import 'package:test1/imageUpload.dart';
+import 'package:test1/imageView.dart';
 import 'package:test1/model/template.dart';
+import 'package:test1/public.dart';
 
 import 'model/wt.dart';
 import 'model/yp.dart';
@@ -45,7 +50,10 @@ class _WtInfo extends State<WtInfo> {
       setState(() {
         pages
           ..add(GcInfo(wt: wt))
-          ..add(YpInfo(yp: yp, template: template))
+          ..add(YpInfo(
+              yp: yp,
+              template: template,
+              status: res.data["data"]["yp"]["status"]))
           ..add(YpPicture(ypCode: yp.ypCode));
       });
       //获取样品图片信息
@@ -92,11 +100,13 @@ class _WtInfo extends State<WtInfo> {
 
 class YpInfo extends StatefulWidget {
   final Yp yp;
+  final String status;
   final Template template;
-  YpInfo({Key key, this.yp, this.template}) : super(key: key);
+  YpInfo({Key key, this.yp, this.status, this.template}) : super(key: key);
 
   @override
-  State<StatefulWidget> createState() => _YpInfo(yp: yp, template: template);
+  State<StatefulWidget> createState() =>
+      _YpInfo(yp: yp, template: template, status: status);
 }
 
 class KeyValue {
@@ -108,20 +118,128 @@ class KeyValue {
 class _YpInfo extends State<YpInfo> {
   final Yp yp;
   final Template template;
+  final String status;
   Map<String, dynamic> jsonYp;
   Map<String, dynamic> jsonTemplate;
   List<KeyValue> forms = new List();
 
-  _YpInfo({this.yp, this.template});
+  _YpInfo({this.yp, this.template, this.status});
   static String getString(String value) {
-    print("getString $value");
     String s = value;
+    if (s == "null") {
+      return "";
+    }
     if (s.startsWith("[")) {
       s = s.substring(1, s.length - 1);
       List<String> ss = s.split(",");
       s = ss.join("\n");
     }
     return s;
+  }
+
+  Future confirmYp() async {
+    final action = await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: Row(children: <Widget>[
+                Icon(
+                  Icons.chat,
+                  color: Colors.green,
+                  size: 40,
+                ),
+                Text("确认样品")
+              ]),
+              content: Text("请仔细检测该样品是否是正确样品!"),
+              actions: <Widget>[
+                FlatButton(
+                    child: Text("不通过"),
+                    onPressed: () => Navigator.pop(context, "不通过")),
+                FlatButton(
+                  child: Text("通过"),
+                  onPressed: () => Navigator.pop(context, "通过"),
+                )
+              ],
+            ));
+    try {
+      dio.post("/yp/comfirmYp", data: {
+        "yp_code": yp.ypCode,
+        "status": action,
+      }).then((res) {
+        if (res.data["msg"] == "确认成功") {
+          Navigator.pop(context);
+        }
+      });
+    } catch (e) {
+      print("确认样品发送错误: $e");
+    }
+  }
+
+  Future scanYp() async {
+    final action = await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: Row(children: <Widget>[
+                Icon(
+                  Icons.warning,
+                  color: Colors.yellow,
+                  size: 40,
+                ),
+                Text("注意")
+              ]),
+              content: Text("确认扫描样品二维码吗?\n扫描后该样品将确认收样!"),
+              actions: <Widget>[
+                FlatButton(
+                    child: Text("取消"),
+                    onPressed: () => Navigator.pop(context, "取消")),
+                FlatButton(
+                  child: Text("确认"),
+                  onPressed: () => Navigator.pop(context, "确认"),
+                )
+              ],
+            ));
+    if (action == "确认") {
+      scan().then((qrCode) {
+        try {
+          dio.post("/yp/comfirmYp",
+              data: {"yp_code": yp.ypCode, "status": "确认"}).then((res) {
+            Fluttertoast.showToast(msg: res.data["msg"]);
+            if (res.data["msg"] == "确认成功") {
+              Navigator.pop(context, true);
+            }
+          });
+        } catch (e) {
+          Fluttertoast.showToast(msg: "确认样品失败，发生未知错误：$e");
+        }
+      });
+    }
+  }
+
+  Widget buildBottomBtns() {
+    if (account.type == "取样") {
+      return Center(
+        child: RaisedButton(
+          onPressed: () => scanYp(),
+          child: Text("扫描样品"),
+        ),
+      );
+    } else if (account.type == "检测") {
+      switch (status) {
+        case "确认":
+          return Center(
+            child: RaisedButton(
+              color: Colors.blue,
+              onPressed: () => confirmYp(),
+              child: Text("确认样品"),
+            ),
+          );
+          break;
+        case "通过":
+        case "不通过":
+          return Center(child: Text("已确认"));
+          break;
+      }
+    }
+    return Divider();
   }
 
   @override
@@ -140,6 +258,9 @@ class _YpInfo extends State<YpInfo> {
       for (var i = 1; i < cell.length; i += 2) {
         var key = cell[i - 1];
         var value = jsonYp[cell[i]["name"]].toString();
+        if (cell[i]["name"] == "yp_code") {
+          value = yp.ypCode;
+        }
         v1.add(KeyValue(key: key, value: value));
       }
     });
@@ -151,7 +272,9 @@ class _YpInfo extends State<YpInfo> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Column(
+        body: Container(
+      padding: EdgeInsets.all(10.0),
+      child: Column(
         children: <Widget>[
           Table(
             columnWidths: const {
@@ -168,10 +291,11 @@ class _YpInfo extends State<YpInfo> {
                 Text(getString(forms[index].value))
               ]);
             }),
-          )
+          ),
+          buildBottomBtns()
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -186,6 +310,7 @@ class YpPicture extends StatefulWidget {
 
 class _YpPicture extends State<YpPicture> {
   final String ypCode;
+  bool _loadFinish = false;
   List<Uint8List> qyPictures = new List();
   List<Uint8List> jzPictures = new List();
   _YpPicture({this.ypCode});
@@ -201,13 +326,13 @@ class _YpPicture extends State<YpPicture> {
     qyPictures.clear();
     jzPictures.clear();
     await dio.get("/image/getYpImageInfo",
-        queryParameters: {"yp_code": ypCode}).then((res) {
+        queryParameters: {"yp_code": ypCode}).then((res) async {
       Map<String, dynamic> resData = json.decode(res.toString());
       List images = resData["data"]["images"];
       List<YpImage> ypImages =
           images.map((m) => new YpImage.fromJson(m)).toList();
       for (var i = 0; i < ypImages.length; i++) {
-        dio
+        await dio
             .post("/image/getImage",
                 queryParameters: {
                   "path": ypImages[i].path,
@@ -227,30 +352,107 @@ class _YpPicture extends State<YpPicture> {
           });
         });
       }
+      setState(() {
+        _loadFinish = true;
+      });
     });
+  }
+
+  void uploadImage(String type, int num) {
+    Navigator.of(context)
+        .push(new MaterialPageRoute(
+            builder: (context) => ImageUpload(
+                  type: type,
+                  currentImages: num,
+                  ypCode: ypCode,
+                )))
+        .then((data) {
+      print("返回数据为： $data");
+      if (data == true) {
+        //重新加载图片
+        loadImage();
+      }
+    });
+  }
+
+  void uploadQyImage() {
+    uploadImage("取样", qyPictures.length);
+  }
+
+  void uploadJzImage() {
+    print("上传见证照片");
+    print("见证照片数目 ${jzPictures.length}");
+    uploadImage("见证", jzPictures.length);
+  }
+
+  Widget buildImageUploadBtns(String type) {
+    print(account.type);
+    if (account.type == type) {
+      return Center(
+          child: Column(
+        children: <Widget>[
+          ListTile(
+              title: Text(type + "照片",
+                  style: new TextStyle(fontWeight: FontWeight.w500)),
+              subtitle: _loadFinish
+                  ? RaisedButton(
+                      onPressed: () {
+                        if (type == "见证") {
+                          return jzPictures.length < 6 ? uploadJzImage() : null;
+                        }
+                        return qyPictures.length < 6 ? uploadQyImage() : null;
+                      },
+                      child: Text("上传$type照片"),
+                    )
+                  : null),
+        ],
+      ));
+    }
+    return ListTile(
+      title: Text(
+        type + "照片",
+        style: new TextStyle(fontWeight: FontWeight.w400),
+      ),
+    );
+  }
+
+  void showImage(Uint8List asset) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (context) {
+      return ImageView(
+        asset: asset,
+      );
+    }));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(children: [
-        Center(
-          child: Text("取样照片"),
-        ),
+        Center(child: buildImageUploadBtns("见证")),
         Expanded(
           child: GridView.count(
             crossAxisCount: 3,
             children: List.generate(jzPictures.length, (index) {
-              return Image.memory(jzPictures[index]);
+              var asset = jzPictures[index];
+              return InkWell(
+                onTap: () => showImage(asset),
+                child: Image.memory(asset),
+              );
             }),
           ),
         ),
-        Center(child: Text("见证照片")),
+        Center(
+          child: buildImageUploadBtns("取样"),
+        ),
         Expanded(
           child: GridView.count(
               crossAxisCount: 3,
               children: List.generate(qyPictures.length, (index) {
-                return Image.memory(qyPictures[index]);
+                var asset = qyPictures[index];
+                return InkWell(
+                  onTap: () => showImage(asset),
+                  child: Image.memory(asset),
+                );
               })),
         )
       ]),

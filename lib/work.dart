@@ -4,11 +4,60 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:test1/http.dart';
 import 'package:test1/model/wt.dart';
+import 'package:test1/public.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:test1/wtInfo.dart';
 
 class WorkPage extends StatefulWidget {
   @override
-  State<StatefulWidget> createState() => new _WorkPage();
+  State<StatefulWidget> createState() {
+    if (account.type == "检测") {
+      return new _ComfirmYpPage();
+    }
+    return new _WorkPage();
+  }
+}
+
+class _ComfirmYpPage extends State<WorkPage> {
+  @override
+  Future scanYp() async {
+    scan().then((qrCode) {
+      if (qrCode != "") {
+        dio.post("/yp/getYpByErCode", data: {"qr_code": qrCode}).then((res) {
+          print("获取的样品编号是${res.data["data"]}");
+          Navigator.of(context).push(new MaterialPageRoute(builder: (context) {
+            return WtInfo(ypCode: res.data["data"]);
+          }));
+          print(res);
+        });
+      }
+    });
+  }
+
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("扫描样品"),
+      ),
+      body: Center(
+          child: SizedBox(
+        height: 40.0,
+        width: 140.0,
+        child: RaisedButton(
+            color: Colors.blueAccent,
+            onPressed: () => scanYp(),
+            child: Row(
+              children: <Widget>[
+                Icon(
+                  Icons.camera,
+                  color: Colors.white,
+                ),
+                Text("扫描")
+              ],
+            )),
+      )),
+    );
+  }
 }
 
 class _WorkPage extends State<WorkPage> {
@@ -95,29 +144,57 @@ class _WorkPage extends State<WorkPage> {
   }
 
   void _getData() async {
-    var res = await dio.post("/wt/getWtListByYp", data: {
-      "condition": {},
-      "page": {
-        "limit": 15,
-        "current": _current,
+    setState(() {
+      _wts.clear();
+    });
+    try {
+      var res = await dio.post("/wt/getWtListByYp", data: {
+        "condition": {"w.status": "提交", "s.status": "提交"},
+        "page": {
+          "limit": 15,
+          "current": _current,
+        }
+      });
+      Map<String, dynamic> resData = json.decode(res.toString());
+      List rows = resData["data"]["rows"];
+      print(rows);
+      List<Wt> wts = rows.map((m) => new Wt.fromJson(m)).toList();
+      setState(() {
+        _wts.addAll(wts);
+      });
+    } catch (e) {
+      Fluttertoast.showToast(msg: "请求数据失败");
+      setState(() {
+        _wts.clear();
+      });
+      print(e);
+    }
+  }
+
+  void toWtInfo(Wt wt) {
+    Navigator.of(context).push(new MaterialPageRoute(builder: (context) {
+      return WtInfo(ypCode: wt.ypCode);
+    })).then((result) {
+      if (result == true) {
+        _getData();
       }
     });
-    Map<String, dynamic> resData = json.decode(res.toString());
-    List rows = resData["data"]["rows"];
-    print(rows);
-    List<Wt> wts = rows.map((m) => new Wt.fromJson(m)).toList();
-    setState(() {
-      _wts.addAll(wts);
-    });
+  }
+
+  Widget buildWtinfo(Wt wt) {
+    return new RaisedButton(
+      onPressed: () => toWtInfo(wt),
+      child: new Text("工作详情"),
+    );
   }
 
   Widget _buildRow(Wt wt, int i) {
     return new ListTile(
         trailing: new WtInfoButton(wt),
         leading: new Text(i.toString()),
-        subtitle: new Text(wt.type),
+        subtitle: new Text(wt.wtCode),
         title: new Text(
-          wt.wtCode,
+          wt.xmName,
           style: _biggerFont,
         ));
   }
